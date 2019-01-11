@@ -104,7 +104,7 @@ static int vsock_listen(const char *port_str)
 
 static int tcp_connect(const char *node, const char *service)
 {
-	int fd;
+	int fd = -1;
 	int ret;
 	const struct addrinfo hints = {
 		.ai_family = AF_INET,
