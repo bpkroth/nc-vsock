@@ -5,14 +5,14 @@ DEBUG =
 
 CFLAGS = -Wall -O -g $(DEBUG)
 
-all: nc-vsock vsock-latency-benchmark
+all: nc-vsock vsock-latency-benchmark vsock-oneway-latency-benchmark
 
 debug: DEBUG = -DDEBUG
 
 debug: all
 
 clean:
-	rm -f nc-vsock vsock-latency-benchmark
+	rm -f nc-vsock vsock-latency-benchmark vsock-oneway-latency-benchmark
 
 rpm:
 	wget -O ~/rpmbuild/SOURCES/${TARFILE} https://github.com/stefanha/nc-vsock/archive/v${VERSION}.tar.gz
