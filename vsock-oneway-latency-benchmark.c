@@ -44,6 +44,7 @@
 #include <linux/vm_sockets.h>
 #include <x86intrin.h>
 #include <math.h>
+#include <limits.h>
 
 typedef unsigned long long tsc_t;
 
@@ -250,9 +251,7 @@ void run_client(int server_cid)
 
 void print_results()
 {
-	// TODO: compute min/max/avg/stddev
-
-	tsc_t min = 0;
+	tsc_t min = ULONG_MAX;
 	tsc_t max = 0;
 	tsc_t sum = 0;
 	for (int i=0; i<ITERATIONS; i++)
