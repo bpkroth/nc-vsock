@@ -3,11 +3,11 @@ TARFILE = nc-vsock-${VERSION}.tar.gz
 
 DEBUG =
 
-CFLAGS = -Wall -O -g $(DEBUG)
+CFLAGS = -Wall -O -lm $(DEBUG)
 
 all: nc-vsock vsock-latency-benchmark vsock-oneway-latency-benchmark
 
-debug: DEBUG = -DDEBUG
+debug: DEBUG = -DDEBUG -g
 
 debug: all
 

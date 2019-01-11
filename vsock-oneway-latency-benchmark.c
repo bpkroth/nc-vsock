@@ -43,13 +43,15 @@
 #include <sys/socket.h>
 #include <linux/vm_sockets.h>
 #include <x86intrin.h>
+#include <math.h>
 
 typedef unsigned long long tsc_t;
 
 #define ITERATIONS 1000
 #define SERVER_LISTEN_PORT 12345
 // variable for testing with different lengths (up to 4096)
-#define CLIENT_MESSAGE_LENGTH 32
+//#define CLIENT_MESSAGE_LENGTH 32
+#define CLIENT_MESSAGE_LENGTH 4096
 
 const char* SERVER_RESPONSE_MESSAGE = "s";
 const int SERVER_RESPONSE_LENGTH = 1;
@@ -250,10 +252,30 @@ void print_results()
 {
 	// TODO: compute min/max/avg/stddev
 
+	tsc_t min = 0;
+	tsc_t max = 0;
+	tsc_t sum = 0;
 	for (int i=0; i<ITERATIONS; i++)
 	{
 		fprintf(stdout, "%4d: %llu\n", i, ticks[i]);
+
+		min = (ticks[i] < min) ? ticks[i] : min;
+		max = (ticks[i] > max) ? ticks[i] : max;
+		sum += ticks[i];
 	}
+
+	long double avg = sum / (long double) ITERATIONS;
+	long double stddev = 0;
+	for (int i=0; i<ITERATIONS; i++)
+	{
+		stddev += pow(ticks[i] - avg, 2);
+	}
+	stddev = sqrt(stddev / ITERATIONS);
+
+	fprintf(stdout, "min: %llu\n", min);
+	fprintf(stdout, "max: %llu\n", max);
+	fprintf(stdout, "avg: %Lf\n", avg);
+	fprintf(stdout, "stddev: %Lf\n", stddev);
 }
 
 int main(int argc, char** argv)
