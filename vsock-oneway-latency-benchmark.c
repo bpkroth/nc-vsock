@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <linux/vm_sockets.h>
 #include <x86intrin.h>
@@ -153,7 +154,17 @@ int vsock_listen_and_accept_single_client_connection()
 		return -1;
 	}
 
-	fprintf(stderr, "Connection from cid %u port %u...\n", sa_client.svm_cid, sa_client.svm_port);
+	int host_vm_id;
+	socklen_t host_vm_id_size = sizeof(host_vm_id);
+	if (getsockopt(client_fd, SOL_SOCKET, SO_VM_SOCKETS_PEER_HOST_VM_ID, (void *)&host_vm_id, &host_vm_id_size) != 0)
+	{
+		perror("getsockopt");
+		close(client_fd);
+		close(listen_fd);
+		return -1;
+	}
+
+	fprintf(stderr, "Connection from cid %u (id: %d, size: %u) port %u...\n", sa_client.svm_cid, host_vm_id, host_vm_id_size, sa_client.svm_port);
 
 	close(listen_fd);
 	return client_fd;
