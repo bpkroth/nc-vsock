@@ -42,6 +42,10 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/un.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <linux/vm_sockets.h>
 #include <x86intrin.h>
 #include <math.h>
@@ -51,9 +55,11 @@ typedef unsigned long long tsc_t;
 
 #define ITERATIONS 1000
 #define SERVER_LISTEN_PORT 12345
-// variable for testing with different lengths (up to 4096)
-//#define CLIENT_MESSAGE_LENGTH 32
-#define CLIENT_MESSAGE_LENGTH 4096
+#define SERVER_UNIX_PATH "/tmp/vsock-oneway-latency-benchmark.sock"
+
+// TODO: variable for testing with different lengths (up to 4096)
+#define CLIENT_MESSAGE_LENGTH 32
+//#define CLIENT_MESSAGE_LENGTH 4096
 
 const char* SERVER_RESPONSE_MESSAGE = "s";
 const int SERVER_RESPONSE_LENGTH = 1;
@@ -64,11 +70,6 @@ tsc_t ticks[ITERATIONS] = {0};
 #else
 #define DEBUG_PRINT(...) do{ } while ( false )
 #endif
-
-void print_usage()
-{
-	fprintf(stderr, "%s\n", "usage: vsock-latency-benchmark <-s client-tsc-offset|-c server-cid>");
-}
 
 inline tsc_t begin_rdtsc()
 {
@@ -84,7 +85,7 @@ inline tsc_t end_rdtsc()
 	// core it was read from) we don't care about it in this case, since we
 	// expect this benchmark to be run with taskset to affinitize it to a core
 
-	unsigned int cpuNum; 
+	unsigned int cpuNum;
 	unsigned long long tsc = __rdtscp(&cpuNum);
 	_mm_lfence();
 	return tsc;
@@ -145,7 +146,7 @@ int vsock_listen_and_accept_single_client_connection()
 		return -1;
 	}
 
-	DEBUG_PRINT("%s\n", "Listening ...");
+	DEBUG_PRINT("%s\n", "Listening on vsock VMADDR_CID_ANY (2 for the host) ...");
 
 	client_fd = accept(listen_fd, (struct sockaddr*)&sa_client, &socklen_client);
 	if (client_fd < 0) {
@@ -170,11 +171,110 @@ int vsock_listen_and_accept_single_client_connection()
 	return client_fd;
 }
 
-void run_server(long long client_tsc_offset)
+int unix_listen_and_accept_single_client_connection()
+{
+	int listen_fd;
+	int client_fd;
+
+	struct sockaddr_un sa_listen = {
+		.sun_family = AF_UNIX,
+	};
+	strncpy(sa_listen.sun_path, SERVER_UNIX_PATH, sizeof(sa_listen.sun_path)-1);
+	struct sockaddr_vm sa_client;
+	socklen_t socklen_client = sizeof(sa_client);
+
+	listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (listen_fd < 0) {
+		perror("socket");
+		return -1;
+	}
+
+	if (bind(listen_fd, (struct sockaddr*)&sa_listen, sizeof(sa_listen)) != 0) {
+		perror("bind");
+		close(listen_fd);
+		return -1;
+	}
+
+	if (listen(listen_fd, 1) != 0) {
+		perror("listen");
+		close(listen_fd);
+		return -1;
+	}
+
+	DEBUG_PRINT("Listening at '%s' ...", SERVER_UNIX_PATH);
+
+	client_fd = accept(listen_fd, (struct sockaddr*)&sa_client, &socklen_client);
+	if (client_fd < 0) {
+		perror("accept");
+		close(listen_fd);
+		return -1;
+	}
+
+	fprintf(stderr, "%s\n", "Connection from ... (not sure how to get the remote peer details offhand ...");
+
+	close(listen_fd);
+	return client_fd;
+}
+
+int inet_listen_and_accept_single_client_connection()
+{
+	int listen_fd;
+	int client_fd;
+
+	struct sockaddr_in sa_listen = {
+		.sin_family = AF_INET,
+		// Listen on all addrs so we can test both from loopback and across the network.
+		.sin_addr.s_addr = INADDR_ANY,
+		.sin_port = htons(SERVER_LISTEN_PORT),
+	};
+	struct sockaddr_in sa_client;
+	socklen_t socklen_client = sizeof(sa_client);
+
+	listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (listen_fd < 0) {
+		perror("socket");
+		return -1;
+	}
+
+	// Forcefully attaching socket to port
+	int opt = 1;
+	if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)))
+	{
+		perror("setsockopt");
+		exit(EXIT_FAILURE);
+	}
+
+	if (bind(listen_fd, (struct sockaddr*)&sa_listen, sizeof(sa_listen)) != 0) {
+		perror("bind");
+		close(listen_fd);
+		return -1;
+	}
+
+	if (listen(listen_fd, 1) != 0) {
+		perror("listen");
+		close(listen_fd);
+		return -1;
+	}
+
+	DEBUG_PRINT("Listening on inet '0.0.0.0' at port '%d' ...", SERVER_LISTEN_PORT);
+
+	client_fd = accept(listen_fd, (struct sockaddr*)&sa_client, &socklen_client);
+	if (client_fd < 0) {
+		perror("accept");
+		close(listen_fd);
+		return -1;
+	}
+
+	fprintf(stderr, "Connection from client address '%s' at port %u ...\n", inet_ntoa(sa_client.sin_addr), ntohs(sa_client.sin_port));
+
+	close(listen_fd);
+	return client_fd;
+}
+
+
+void run_server(int client_sock_fd, long long client_tsc_offset)
 {
 	DEBUG_PRINT("Server using tsc-offset of %lld.\n", client_tsc_offset);
-
-	int client = vsock_listen_and_accept_single_client_connection();
 
 	for (int i=0; i<ITERATIONS; i++)
 	{
@@ -183,7 +283,7 @@ void run_server(long long client_tsc_offset)
 		// notice that there's data available?
 
 		tsc_t client_send_tsc;
-		size_t bytes_read = read(client, &client_send_tsc, sizeof(client_send_tsc));
+		size_t bytes_read = read(client_sock_fd, &client_send_tsc, sizeof(client_send_tsc));
 		if (bytes_read <= 0 || bytes_read != sizeof(client_send_tsc))
 		{
 			perror("read");
@@ -192,7 +292,7 @@ void run_server(long long client_tsc_offset)
 
 		DEBUG_PRINT("Server received %lu bytes ('%llu') at iteration %d.\n", bytes_read, client_send_tsc, i);
 
-		if (write(client, SERVER_RESPONSE_MESSAGE, SERVER_RESPONSE_LENGTH) != SERVER_RESPONSE_LENGTH)
+		if (write(client_sock_fd, SERVER_RESPONSE_MESSAGE, SERVER_RESPONSE_LENGTH) != SERVER_RESPONSE_LENGTH)
 		{
 			perror("write");
 			exit(EXIT_FAILURE);
@@ -202,18 +302,18 @@ void run_server(long long client_tsc_offset)
 	}
 }
 
-int vsock_connect(int cid)
+int vsock_connect(int server_cid)
 {
-	DEBUG_PRINT("Client connecting to cid %d on port %d.\n", cid, SERVER_LISTEN_PORT);
+	DEBUG_PRINT("Client connecting to cid %d on port %d.\n", server_cid, SERVER_LISTEN_PORT);
 
 	int fd;
 	struct sockaddr_vm sa = {
 		.svm_family = AF_VSOCK,
 		.svm_port = SERVER_LISTEN_PORT,
-		.svm_cid = cid,
+		.svm_cid = server_cid,
 	};
 
-	if (cid < 0) {
+	if (server_cid < 0) {
 		return -1;
 	}
 
@@ -232,14 +332,67 @@ int vsock_connect(int cid)
 	return fd;
 }
 
-void run_client(int server_cid)
+int unix_connect(const char *server_unix_path)
 {
-	int server = vsock_connect(server_cid);
+	DEBUG_PRINT("Client connecting to unix path '%s'.\n", server_unix_path);
 
+	int fd;
+	struct sockaddr_un sa = {
+		.sun_family = AF_UNIX,
+	};
+	strncpy(sa.sun_path, server_unix_path, sizeof(sa.sun_path)-1);
+
+	fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0) {
+		perror("socket");
+		return -1;
+	}
+
+	if (connect(fd, (struct sockaddr*)&sa, sizeof(sa)) != 0) {
+		perror("connect");
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+int inet_connect(const char *server_ip)
+{
+	DEBUG_PRINT("Client connecting to server ip '%s' on port %u.\n", server_ip, SERVER_LISTEN_PORT);
+
+	int fd;
+	struct sockaddr_in sa = {
+		.sin_family = AF_INET,
+		.sin_port = htons(SERVER_LISTEN_PORT),
+	};
+	if (inet_pton(AF_INET, server_ip, &sa.sin_addr) != 1)
+	{
+		perror("inet_pton");
+		return -1;
+	}
+
+	fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 0) {
+		perror("socket");
+		return -1;
+	}
+
+	if (connect(fd, (struct sockaddr*)&sa, sizeof(sa)) != 0) {
+		perror("connect");
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+void run_client(int server_sock_fd)
+{
 	for (int i=0; i<ITERATIONS; i++)
 	{
 		tsc_t begin_ts = begin_rdtsc();
-		if (write(server, &begin_ts, sizeof(begin_ts)) != sizeof(begin_ts))
+		if (write(server_sock_fd, &begin_ts, sizeof(begin_ts)) != sizeof(begin_ts))
 		{
 			perror("write");
 			exit(EXIT_FAILURE);
@@ -247,7 +400,7 @@ void run_client(int server_cid)
 
 		char buf[SERVER_RESPONSE_LENGTH+1];
 		memset(buf, '\0', SERVER_RESPONSE_LENGTH + 1);
-		size_t bytes_read = read(server, buf, SERVER_RESPONSE_LENGTH);
+		size_t bytes_read = read(server_sock_fd, buf, SERVER_RESPONSE_LENGTH);
 		if (bytes_read <= 0)
 		{
 			perror("read");
@@ -262,10 +415,12 @@ void run_client(int server_cid)
 
 void print_results()
 {
+	// exclude the first timing result from the rest of the stats
+
 	tsc_t min = ULONG_MAX;
 	tsc_t max = 0;
 	tsc_t sum = 0;
-	for (int i=0; i<ITERATIONS; i++)
+	for (int i=1; i<ITERATIONS; i++)
 	{
 		fprintf(stdout, "%4d: %llu\n", i, ticks[i]);
 
@@ -276,31 +431,119 @@ void print_results()
 
 	long double avg = sum / (long double) ITERATIONS;
 	long double stddev = 0;
-	for (int i=0; i<ITERATIONS; i++)
+	for (int i=1; i<ITERATIONS; i++)
 	{
 		stddev += pow(ticks[i] - avg, 2);
 	}
 	stddev = sqrt(stddev / ITERATIONS);
 
+	fprintf(stdout, "Initial connection/send: %llu\n", ticks[0]);
 	fprintf(stdout, "min: %llu\n", min);
 	fprintf(stdout, "max: %llu\n", max);
 	fprintf(stdout, "avg: %Lf\n", avg);
 	fprintf(stdout, "stddev: %Lf\n", stddev);
 }
 
+void print_usage(const char * msg)
+{
+	fprintf(stderr, "%s\n%s\n", msg, "usage: vsock-latency-benchmark -m <vsock|unix|inet> <-s client-tsc-offset|-c <server-cid|unix-sock-path|ipaddr>>");
+}
+
 int main(int argc, char** argv)
 {
-	if (argc == 3 && strcmp(argv[1], "-s") == 0)
+	enum MODE
 	{
-		run_server(parse_client_tsc_offset(argv[2]));
-	}
-	else if (argc == 3 && strcmp(argv[1], "-c") == 0)
+		VSOCK,
+		UNIX,
+		INET,
+	} mode;
+
+	if (argc >= 3 && strcmp(argv[1], "-m") == 0)
 	{
-		run_client(parse_cid(argv[2]));
+		if (strcmp(argv[2], "vsock") == 0)
+		{
+			mode = VSOCK;
+		}
+		else if (strcmp(argv[2], "unix") == 0)
+		{
+			mode = UNIX;
+		}
+		else if (strcmp(argv[2], "inet") == 0)
+		{
+			mode = INET;
+		}
+		else
+		{
+			print_usage("Unhandled mode argument.");
+			return EXIT_FAILURE;
+		}
 	}
 	else
 	{
-		print_usage();
+		print_usage("Invalid number/type/order of arguments.");
+		return EXIT_FAILURE;
+	}
+
+	if (argc == 5 && strcmp(argv[3], "-s") == 0)
+	{
+		int client_sock_fd = -1;
+		switch (mode)
+		{
+			case VSOCK:
+				client_sock_fd = vsock_listen_and_accept_single_client_connection();
+				break;
+			case UNIX:
+				client_sock_fd = unix_listen_and_accept_single_client_connection();
+				break;
+			case INET:
+				client_sock_fd = inet_listen_and_accept_single_client_connection();
+				break;
+			default:
+				print_usage("Unhandled mode.");
+				return EXIT_FAILURE;
+		}
+
+		long long client_tsc_offset = parse_client_tsc_offset(argv[4]);
+		if (client_tsc_offset == -1)
+		{
+			print_usage("Failed to parse client_tsc_offset argument.");
+			return EXIT_FAILURE;
+		}
+
+		run_server(client_sock_fd, client_tsc_offset);
+
+		if (mode == UNIX)
+		{
+			unlink(SERVER_UNIX_PATH);
+		}
+	}
+	else if (argc == 5 && strcmp(argv[3], "-c") == 0)
+	{
+		int server_sock_fd = -1;
+		switch (mode)
+		{
+			case VSOCK:
+				// arg is expected to typically be 2 for the host cid constant
+				server_sock_fd = vsock_connect(parse_cid(argv[4]));
+				break;
+			case UNIX:
+				// arg is expected to typically be SERVER_UNIX_PATH
+				server_sock_fd = unix_connect(argv[4]);
+				break;
+			case INET:
+				// arg is expected to typically be 127.0.0.1
+				server_sock_fd = inet_connect(argv[4]);
+				break;
+			default:
+				print_usage("Unhandled mode.");
+				return EXIT_FAILURE;
+		}
+
+		run_client(server_sock_fd);
+	}
+	else
+	{
+		print_usage("Invalid number/type/order of arguments.");
 		return EXIT_FAILURE;
 	}
 
