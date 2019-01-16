@@ -53,7 +53,7 @@
 
 typedef unsigned long long tsc_t;
 
-#define ITERATIONS 1000
+#define ITERATIONS 1000000
 #define SERVER_LISTEN_PORT 12345
 #define SERVER_UNIX_PATH "/tmp/vsock-oneway-latency-benchmark.sock"
 
