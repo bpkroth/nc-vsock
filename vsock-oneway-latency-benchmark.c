@@ -413,6 +413,11 @@ void run_client(int server_sock_fd)
 	}
 }
 
+int cmp_tsc_t(const void *a, const void *b)
+{
+	return (*(tsc_t*)a - *(tsc_t*)b);
+}
+
 void print_results()
 {
 	// exclude the first timing result from the rest of the stats
@@ -437,9 +442,13 @@ void print_results()
 	}
 	stddev = sqrt(stddev / ITERATIONS);
 
+	// sort them to get the median
+	qsort(ticks+1, ITERATIONS-1, sizeof(tsc_t), cmp_tsc_t);
+
 	fprintf(stdout, "Initial connection/send: %llu\n", ticks[0]);
 	fprintf(stdout, "min: %llu\n", min);
 	fprintf(stdout, "max: %llu\n", max);
+	fprintf(stdout, "median: %llu\n", ticks[ITERATIONS/2]);
 	fprintf(stdout, "avg: %Lf\n", avg);
 	fprintf(stdout, "stddev: %Lf\n", stddev);
 }
